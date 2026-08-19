@@ -85,6 +85,13 @@ def test_minimax_adapter_must_emit_v1_package():
     assert (dist / "integrations" / "obsidian-mcp-server" / "vault_ops.py").is_file()
     assert (dist / "integrations" / "obsidian-mcp-server" / "README.md").is_file()
     assert (dist / "skills" / "obsidian-second-brain" / "SKILL.md").is_file()
+    # INSTALL.md is the per-platform install/usage note; only the minimax
+    # adapter emits one because the Plugin V1 install path is data-dir
+    # specific and the generic README cannot cover it.
+    install_md = (dist / "INSTALL.md").read_text(encoding="utf-8")
+    assert "OBSIDIAN_VAULT_PATH" in install_md
+    assert ".minimax/plugins/obsidian-second-brain" in install_md
+    assert "restart Mavis" in install_md.lower() or "restart mavis" in install_md.lower()
 
     # V1 spec checks
     manifest = json.loads((dist / ".minimax-plugin" / "plugin.json").read_text(encoding="utf-8"))

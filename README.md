@@ -9,6 +9,7 @@
   <a href="#codex-cli--gemini-cli--opencode"><img src="https://img.shields.io/badge/Codex_CLI-412991?style=for-the-badge&logo=openai&logoColor=white" alt="Codex CLI" /></a>
   <a href="#codex-cli--gemini-cli--opencode"><img src="https://img.shields.io/badge/Gemini_CLI-4285F4?style=for-the-badge&logo=googlegemini&logoColor=white" alt="Gemini CLI" /></a>
   <a href="#codex-cli--gemini-cli--opencode"><img src="https://img.shields.io/badge/OpenCode-181818?style=for-the-badge&logo=opensourceinitiative&logoColor=white" alt="OpenCode" /></a>
+  <a href="#minimax-code"><img src="https://img.shields.io/badge/MiniMax_Code-0D9488?style=for-the-badge" alt="MiniMax Code" /></a>
 </p>
 
 <p align="center">
@@ -712,6 +713,21 @@ pi install ./dist/pi          # or: cp -R dist/pi/.pi/ /path/to/your/vault/
 ```
 
 The **Pi build emits a native [Pi](https://pi.dev) package**: prompt templates under `.pi/prompts/` (invoke as `/obsidian-save`, `/obsidian-daily`, etc.) plus a discovery skill under `.pi/skills/obsidian-second-brain/` (load with `/skill:obsidian-second-brain`). Pi reads the same `~/.config/obsidian-second-brain/.env` keys as the other platforms. It has no background-agent equivalent - run `/obsidian-nightly` manually or via cron. (Contributed by @Gepetdo.)
+
+### MiniMax Code
+
+```bash
+git clone https://github.com/frandev94/obsidian-second-brain
+cd obsidian-second-brain
+bash scripts/build.sh --platform minimax
+# Drop the Plugin V1 package into the Mavis data dir:
+mkdir -p "$HOME/.minimax/plugins/obsidian-second-brain"
+cp -R dist/minimax/. "$HOME/.minimax/plugins/obsidian-second-brain/"
+# Point the MCP server at your vault (env var or edit the .mcp.json):
+export OBSIDIAN_VAULT_PATH="/absolute/path/to/your/vault"
+```
+
+The **minimax build emits a MiniMax Code Plugin V1 package**: a manifest at `.minimax-plugin/plugin.json`, a stdio MCP server config (`obsidian-second-brain.mcp.json` pinning `mcp<2`), the Python MCP server under `integrations/obsidian-mcp-server/` (exposes `obsidian_search`, `obsidian_read_note`, `obsidian_save_note`, `obsidian_capture` as native tools), and a single root skill at `skills/obsidian-second-brain/SKILL.md` summarising the 46 commands. **Mavis** (the agent persona) is what the user types at; **MiniMax Code** is the platform; the data-dir prefix is `~/.minimax/` (the `minimax` segment matches the build flag, not the persona or the product name). Restart Mavis after install. See [`dist/minimax/INSTALL.md`](scripts/build.sh) for prerequisites (`uv`, vault path), the verify-it-works checklist, and the update / uninstall steps.
 
 ### Run on Hermes / open models
 

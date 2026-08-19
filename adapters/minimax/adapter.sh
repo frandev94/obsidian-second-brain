@@ -42,6 +42,7 @@ adapter_build() {
   _minimax_emit_placeholder  "$dst"
   _minimax_copy_mcp_server   "$src" "$dst"
   _minimax_copy_skill        "$src" "$dst"
+  _minimax_emit_install_md   "$dst"
 }
 
 # ── .minimax-plugin/plugin.json ─────────────────────────────────────────────
@@ -161,4 +162,142 @@ _minimax_copy_skill() {
   [[ -f "$src_file" ]] || { echo "minimax adapter: missing $src_file" >&2; return 1; }
   mkdir -p "$dst_dir"
   cp -p "$src_file" "$dst_dir/SKILL.md"
+}
+
+# ── INSTALL.md ───────────────────────────────────────────────────────────────
+# Per-platform install + usage notes. Other adapters (codex-cli, gemini-cli,
+# opencode, pi, hermes, agent-skills) do not emit this file; we add it for
+# minimax because the Plugin V1 install path is data-dir-specific and the
+# generic README cannot cover it.
+_minimax_emit_install_md() {
+  local dst="$1"
+  local out="$dst/INSTALL.md"
+  cat > "$out" <<'EOF'
+# obsidian-second-brain on Mavis (MiniMax Code)
+
+This adapter ships the skill as a **MiniMax Code Plugin V1** package that lives
+under the Mavis data directory. It exposes the 45 vault commands as a single
+root skill plus a stdio MCP server for direct tool calls (`obsidian_search`,
+`obsidian_read_note`, `obsidian_save_note`, `obsidian_capture`).
+
+The vault is **not** bundled. You point the MCP server at any existing Obsidian
+vault (or a freshly bootstrapped one) via the `OBSIDIAN_VAULT_PATH` env var.
+
+## Prerequisites
+
+- **Mavis (MiniMax Code)** installed and runnable. The Plugin picker reads
+  `~/.minimax/plugins/` (Windows: `%USERPROFILE%\.minimax\plugins\`).
+- **`uv`** on PATH (the MCP server launches with `uv run --with mcp<2 ...`).
+  Install from <https://docs.astral.sh/uv/>.
+- **An Obsidian vault** anywhere on disk. The adapter does not create or
+  bootstrap one for you; if you do not have one, use the upstream
+  `python scripts/bootstrap_vault.py --preset default /path/to/vault` first.
+
+## Build
+
+```bash
+git clone https://github.com/frandev94/obsidian-second-brain
+cd obsidian-second-brain
+bash scripts/build.sh --platform minimax
+```
+
+The artifact lands at `dist/minimax/`:
+
+```
+.minimax-plugin/
+    plugin.json                          # Plugin V1 manifest
+obsidian-second-brain.mcp.json           # stdio MCP launch config
+icon.png                                # 1x1 PNG (placeholder; replace with your own)
+placeholder                             # write-tool anchor
+integrations/
+    obsidian-mcp-server/
+        server.py                       # MCP server (obsidian_search, etc.)
+        vault_ops.py
+        README.md
+skills/
+    obsidian-second-brain/
+        SKILL.md                        # root skill (46 commands summarized)
+INSTALL.md                              # this file
+```
+
+## Install
+
+```bash
+# 1. Drop the package into the Mavis data dir
+mkdir -p "$HOME/.minimax/plugins/obsidian-second-brain"
+cp -R dist/minimax/. "$HOME/.minimax/plugins/obsidian-second-brain/"
+
+# 2. Point the MCP server at your vault (pick ONE of the two options)
+
+# 2a. Export the env var globally (Linux/macOS: ~/.bashrc / ~/.zshrc;
+#     Windows: System Properties → Environment Variables, or set in your
+#     shell before launching Mavis).
+export OBSIDIAN_VAULT_PATH="/absolute/path/to/your/vault"
+
+# 2b. Or edit the installed .mcp.json and replace <VAULT_PATH> with your
+#     real vault path:
+#     $HOME/.minimax/plugins/obsidian-second-brain/obsidian-second-brain.mcp.json
+#     "OBSIDIAN_VAULT_PATH": "C:\\Users\\you\\Documents\\vault"
+```
+
+Then **restart Mavis**. The plugin shows up in the Plugin picker as
+"Obsidian Second Brain" (displayName from the manifest). The 45 commands are
+discovered from `skills/obsidian-second-brain/SKILL.md`.
+
+## Verify
+
+1. Open Mavis and pick the "Obsidian Second Brain" plugin.
+2. From the chat, ask: *"What commands does this skill expose?"* — you should
+   get the 45-command summary from the root skill.
+3. Ask: *"Search my vault for 'foo'"* — the agent should call
+   `obsidian_search` against your vault and return real notes (or empty
+   results if your vault is empty).
+4. Ask: *"Save this conversation to my vault"* — the agent should call
+   `obsidian_save_note` and write a new note under your vault's `Inbox/`
+   with an `## For future agent` preamble and AI-first frontmatter.
+
+If step 2 returns nothing, the skill is not loading — check Mavis's plugin
+list. If step 3 fails, the MCP server cannot reach your vault — check
+`OBSIDIAN_VAULT_PATH` (no trailing slash, absolute path, and the directory
+exists).
+
+## Updating
+
+```bash
+cd obsidian-second-brain
+git pull
+bash scripts/build.sh --platform minimax
+rm -rf "$HOME/.minimax/plugins/obsidian-second-brain"/*
+cp -R dist/minimax/. "$HOME/.minimax/plugins/obsidian-second-brain/"
+```
+
+Then restart Mavis. The MCP server's `uv run --with mcp<2` resolves the
+MCP SDK on every launch, so Python deps do not need a separate update step.
+
+## Uninstall
+
+```bash
+rm -rf "$HOME/.minimax/plugins/obsidian-second-brain"
+```
+
+Then restart Mavis. Your vault is **not** touched.
+
+## Troubleshooting
+
+- **`uv: command not found`** when Mavis launches the MCP server. Install
+  `uv` and ensure it is on the PATH Mavis uses (on Windows, the PATH
+  inherited from the user session, not the per-app PATH).
+- **MCP server starts but every call fails with "vault path does not
+  exist"**. `OBSIDIAN_VAULT_PATH` is empty, relative, or points at a
+  directory that does not exist. Re-check the env var in the same shell
+  Mavis is launched from, or hardcode it in `.mcp.json`.
+- **Plugin shows in the picker but the skill is empty**. The build
+  artifact is incomplete — re-run `bash scripts/build.sh --platform
+  minimax` and confirm `dist/minimax/skills/obsidian-second-brain/SKILL.md`
+  exists before copying.
+- **Windows path backslashes**. The MCP config uses POSIX-style paths in
+  its `args`. The `OBSIDIAN_VAULT_PATH` value can be either POSIX
+  (`/c/Users/you/vault`) or Windows (`C:\\Users\\you\\vault`) — both work
+  because `server.py` normalises via `pathlib.Path`.
+EOF
 }
