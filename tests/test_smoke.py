@@ -84,7 +84,27 @@ def test_minimax_adapter_must_emit_v1_package():
     assert (dist / "integrations" / "obsidian-mcp-server" / "server.py").is_file()
     assert (dist / "integrations" / "obsidian-mcp-server" / "vault_ops.py").is_file()
     assert (dist / "integrations" / "obsidian-mcp-server" / "README.md").is_file()
-    assert (dist / "skills" / "obsidian-second-brain" / "SKILL.md").is_file()
+    # One skill per upstream command (commands/*.md). The MCP server is the
+    # only "tool" surface; everything else flows through the skill set so
+    # Mavis can present each as a separately discoverable entry.
+    skill_dirs = sorted((dist / "skills").iterdir())
+    assert len(skill_dirs) == 46, f"expected 46 per-command skills, got {len(skill_dirs)}"
+    for skill_dir in skill_dirs:
+        skill_md = skill_dir / "SKILL.md"
+        assert skill_md.is_file(), f"missing SKILL.md in {skill_dir.name}"
+        text = skill_md.read_text(encoding="utf-8")
+        # Per the V1 spec every skill frontmatter needs name + description
+        assert text.startswith("---\n"), f"{skill_dir.name}: missing frontmatter"
+        assert f"name: {skill_dir.name}" in text, f"{skill_dir.name}: name mismatch"
+        assert "description:" in text.split("---\n", 2)[1], f"{skill_dir.name}: missing description"
+    # Manifest's skills[] array must list every emitted skill exactly
+    # once. Order check is loose (locale collation differs between bash
+    # glob and Python sorted on Windows), but set membership is exact.
+    manifest_skills = json.loads((dist / ".minimax-plugin" / "plugin.json").read_text(encoding="utf-8"))["skills"]
+    expected = [f"skills/{d.name}/SKILL.md" for d in skill_dirs]
+    assert sorted(manifest_skills) == sorted(expected), (
+        f"manifest skills mismatch\n  manifest: {sorted(manifest_skills)}\n  emitted:  {sorted(expected)}"
+    )
     # INSTALL.md is the per-platform install/usage note; only the minimax
     # adapter emits one because the Plugin V1 install path is data-dir
     # specific and the generic README cannot cover it.

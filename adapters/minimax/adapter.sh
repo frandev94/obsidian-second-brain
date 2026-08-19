@@ -6,11 +6,13 @@
 # The shape is a manifest at .minimax-plugin/plugin.json plus zero or more
 # `*.mcp.json` launch configs and `skills/<skill>/SKILL.md` references.
 #
-# This adapter does NOT compile the per-command skill set the other adapters
-# emit. Mavis plugins ship a single root skill (`obsidian-second-brain`) that
-# summarises the 45 commands; the per-tool work is exposed through the
-# stdio MCP server at `integrations/obsidian-mcp-server/server.py`, which
-# the build copies verbatim from upstream.
+# Each `commands/*.md` in the upstream becomes one skill directory
+# `skills/<command-name>/SKILL.md` (matching the .agents/skills/ harness
+# pattern Codex / OpenCode / Antigravity use). The MCP server at
+# `integrations/obsidian-mcp-server/server.py` is copied verbatim and
+# exposed via `obsidian-second-brain.mcp.json`; it provides the
+# `obsidian_search` / `obsidian_read_note` / `obsidian_save_note` /
+# `obsidian_capture` tools the skills call into.
 #
 # Per the Plugin V1 spec, the manifest `version` is packaging-local; it does
 # NOT mirror the upstream `pyproject.toml` semver. We hardcode `0.0.0` so the
@@ -26,7 +28,6 @@ MINIMAX_DIR="minimax"
 MINIMAX_MANIFEST_DIR=".minimax-plugin"
 MINIMAX_MANIFEST="${MINIMAX_MANIFEST_DIR}/plugin.json"
 MINIMAX_MCP_CONFIG="obsidian-second-brain.mcp.json"
-MINIMAX_SKILL_DIR="skills/obsidian-second-brain"
 
 # 1x1 transparent PNG, 67 bytes. Used only when upstream `media/icon.png` is
 # absent (so the V1 spec's required `icon` field always resolves). Stored as
@@ -36,12 +37,32 @@ MINIMAX_ICON_FALLBACK_HEX="89504e470d0a1a0a0000000d49484452000000010000000108060
 adapter_build() {
   local src="$1" dst="$2"
 
-  _minimax_emit_manifest     "$dst"
+  # Phase 1: discover commands, emit one skills/<name>/SKILL.md per command,
+  # and collect the list of emitted skill paths for the manifest. Iteration
+  # order is sorted so the emitted manifest is byte-stable across shells
+  # and filesystems (bash glob order is not portable).
+  local skill_paths=()
+  local cmd_dir="$src/commands"
+  if [[ -d "$cmd_dir" ]]; then
+    local cmd_file name description
+    # shellcheck disable=SC2207
+    while IFS= read -r cmd_file; do
+      [[ -f "$cmd_file" ]] || continue
+      name=$(basename "$cmd_file" .md)
+      description=$(_minimax_extract_description "$cmd_file")
+      _minimax_emit_command_skill "$dst" "$name" "$description" "$cmd_file"
+      skill_paths+=("skills/$name/SKILL.md")
+    done < <(printf '%s\n' "$cmd_dir"/*.md | LC_ALL=C sort)
+  fi
+
+  # Phase 2: emit everything that depends on the discovered skill list
+  # (manifest) plus the static pieces (MCP config, icon, placeholder,
+  # copied server files, install notes).
+  _minimax_emit_manifest     "$dst" "${skill_paths[@]}"
   _minimax_emit_mcp_config   "$dst"
   _minimax_emit_icon         "$src" "$dst"
   _minimax_emit_placeholder  "$dst"
   _minimax_copy_mcp_server   "$src" "$dst"
-  _minimax_copy_skill        "$src" "$dst"
   _minimax_emit_install_md   "$dst"
 }
 
@@ -50,37 +71,47 @@ adapter_build() {
 # stamps their own packaging version on copy, and a hardcoded 0.0.0 makes the
 # emitted package byte-identical across runs (idempotency gate for the smoke
 # test). `OBSIDIAN_VAULT_PATH` is templated as `<VAULT_PATH>` so the artifact
-# has no per-user paths.
+# has no per-user paths. The `skills` array is built dynamically from
+# commands/*.md; this function takes the discovered skill paths as arguments.
 _minimax_emit_manifest() {
   local dst="$1"
+  shift
+  local skill_paths=("$@")
   local out="$dst/$MINIMAX_MANIFEST"
   mkdir -p "$(dirname "$out")"
-  cat > "$out" <<'EOF'
-{
-  "schemaVersion": 1,
-  "name": "obsidian-second-brain",
-  "displayName": "Obsidian Second Brain",
-  "version": "0.0.0",
-  "description": "Persistent memory + notes for Mavis, backed by an Obsidian vault. 46 commands plus a stdio MCP server exposing vault search, read, save and capture as native tools.",
-  "author": "eugeniughelbur (upstream) — packaged for Mavis by fcojg",
-  "icon": "icon.png",
-  "category": "Productivity",
-  "exampleQueries": [
-    "Save this conversation to my Obsidian vault",
-    "Find notes about [topic] in my second brain",
-    "What did I learn this week?",
-    "Research X and update my vault with the findings",
-    "Create today's daily note and pull in overdue tasks"
-  ],
-  "apps": [],
-  "mcpServers": [
-    "obsidian-second-brain.mcp.json"
-  ],
-  "skills": [
-    "skills/obsidian-second-brain/SKILL.md"
-  ]
-}
-EOF
+  {
+    printf '{\n'
+    printf '  "schemaVersion": 1,\n'
+    printf '  "name": "obsidian-second-brain",\n'
+    printf '  "displayName": "Obsidian Second Brain",\n'
+    printf '  "version": "0.0.0",\n'
+    printf '  "description": "Persistent memory + notes for Mavis, backed by an Obsidian vault. 46 commands plus a stdio MCP server exposing vault search, read, save and capture as native tools.",\n'
+    printf '  "author": "eugeniughelbur (upstream) - packaged for Mavis by fcojg",\n'
+    printf '  "icon": "icon.png",\n'
+    printf '  "category": "Productivity",\n'
+    printf '  "exampleQueries": [\n'
+    printf '    "Save this conversation to my Obsidian vault",\n'
+    printf '    "Find notes about [topic] in my second brain",\n'
+    printf '    "What did I learn this week?",\n'
+    printf '    "Research X and update my vault with the findings",\n'
+    printf '    "Create todays daily note and pull in overdue tasks"\n'
+    printf '  ],\n'
+    printf '  "apps": [],\n'
+    printf '  "mcpServers": [\n'
+    printf '    "obsidian-second-brain.mcp.json"\n'
+    printf '  ],\n'
+    printf '  "skills": [\n'
+    local i n=${#skill_paths[@]}
+    for ((i = 0; i < n; i++)); do
+      if (( i < n - 1 )); then
+        printf '    "%s",\n' "${skill_paths[$i]}"
+      else
+        printf '    "%s"\n' "${skill_paths[$i]}"
+      fi
+    done
+    printf '  ]\n'
+    printf '}\n'
+  } > "$out"
 }
 
 # ── obsidian-second-brain.mcp.json ──────────────────────────────────────────
@@ -152,16 +183,61 @@ _minimax_copy_mcp_server() {
   cp -p "$src_dir/README.md"    "$dst_dir/README.md"
 }
 
-# ── skills/obsidian-second-brain/SKILL.md ───────────────────────────────────
-# The single root skill. Copied verbatim from upstream so the V1 spec sees
-# `name` and `description` frontmatter that already match the skill directory.
-_minimax_copy_skill() {
-  local src="$1" dst="$2"
-  local src_file="$src/SKILL.md"
-  local dst_dir="$dst/$MINIMAX_SKILL_DIR"
-  [[ -f "$src_file" ]] || { echo "minimax adapter: missing $src_file" >&2; return 1; }
-  mkdir -p "$dst_dir"
-  cp -p "$src_file" "$dst_dir/SKILL.md"
+# ── skills/<name>/SKILL.md (one per command) ────────────────────────────────
+# Each `commands/<name>.md` becomes `skills/<name>/SKILL.md`. The emitted
+# frontmatter is rebuilt from scratch (name + description) so the V1 spec
+# always sees a valid `name` field, and the body is the original command
+# file with the upstream frontmatter stripped.
+_minimax_extract_description() {
+  # Pull the value of `description:` from the upstream frontmatter. The
+  # command files use a flat one-line `description: ...`, so the first
+  # match inside the first --- block is the one we want. Falls back to
+  # the command filename if the frontmatter is missing or malformed.
+  local cmd_file="$1"
+  local desc
+  desc=$(awk '
+    BEGIN { in_fm = 0; fm_count = 0 }
+    /^---[[:space:]]*$/ {
+      fm_count++
+      in_fm = (fm_count == 1) ? 1 : 0
+      next
+    }
+    in_fm && /^description:[[:space:]]*/ {
+      sub(/^description:[[:space:]]*/, "")
+      print
+      exit
+    }
+  ' "$cmd_file")
+  if [[ -z "$desc" ]]; then
+    desc="obsidian-second-brain command (description missing in upstream frontmatter)"
+  fi
+  printf '%s' "$desc"
+}
+
+_minimax_emit_command_skill() {
+  local dst="$1" name="$2" description="$3" cmd_file="$4"
+  local skill_dir="$dst/skills/$name"
+  mkdir -p "$skill_dir"
+  # Find the line where the upstream frontmatter ends so we can strip it
+  # and keep just the command body. We then wrap that body in our own
+  # `name` + `description` frontmatter (the spec only requires those two).
+  local body_start
+  body_start=$(awk '
+    BEGIN { fm_count = 0 }
+    /^---[[:space:]]*$/ {
+      fm_count++
+      if (fm_count == 2) { print NR + 1; exit }
+    }
+  ' "$cmd_file")
+  [[ -z "$body_start" ]] && body_start=1
+  {
+    printf -- '---\n'
+    printf 'name: %s\n' "$name"
+    printf 'description: %s\n' "$description"
+    printf -- '---\n\n'
+    # +1 because awk is 1-indexed and the next line after `---` is what we want
+    tail -n +"$body_start" "$cmd_file"
+  } > "$skill_dir/SKILL.md"
 }
 
 # ── INSTALL.md ───────────────────────────────────────────────────────────────
@@ -176,9 +252,13 @@ _minimax_emit_install_md() {
 # obsidian-second-brain on Mavis (MiniMax Code)
 
 This adapter ships the skill as a **MiniMax Code Plugin V1** package that lives
-under the Mavis data directory. It exposes the 45 vault commands as a single
-root skill plus a stdio MCP server for direct tool calls (`obsidian_search`,
-`obsidian_read_note`, `obsidian_save_note`, `obsidian_capture`).
+under the Mavis data directory. Each upstream command (`commands/*.md`) becomes
+its own skill directory at `skills/<name>/SKILL.md` - the same shape the
+`.agents/skills/` harness uses for Codex / OpenCode / Antigravity. The stdio
+MCP server at `integrations/obsidian-mcp-server/` exposes the vault read /
+search / save / capture operations as native tools the skills call into
+(`obsidian_search`, `obsidian_read_note`, `obsidian_save_note`,
+`obsidian_capture`).
 
 The vault is **not** bundled. You point the MCP server at any existing Obsidian
 vault (or a freshly bootstrapped one) via the `OBSIDIAN_VAULT_PATH` env var.
@@ -215,8 +295,10 @@ integrations/
         vault_ops.py
         README.md
 skills/
-    obsidian-second-brain/
-        SKILL.md                        # root skill (46 commands summarized)
+    obsidian-save/SKILL.md              # one skill per upstream command
+    obsidian-capture/SKILL.md           # (46 total: obsidian-*, research-*,
+    obsidian-find/SKILL.md              #  x-*, podcast, youtube, ...)
+    ... 43 more ...
 INSTALL.md                              # this file
 ```
 
@@ -241,14 +323,16 @@ export OBSIDIAN_VAULT_PATH="/absolute/path/to/your/vault"
 ```
 
 Then **restart Mavis**. The plugin shows up in the Plugin picker as
-"Obsidian Second Brain" (displayName from the manifest). The 45 commands are
-discovered from `skills/obsidian-second-brain/SKILL.md`.
+"Obsidian Second Brain" (displayName from the manifest). Mavis discovers
+the 46 per-command skills from `skills/<name>/SKILL.md` and routes user
+requests to whichever skill best matches the intent (e.g. "save this
+conversation" -> `skills/obsidian-save/SKILL.md`).
 
 ## Verify
 
 1. Open Mavis and pick the "Obsidian Second Brain" plugin.
 2. From the chat, ask: *"What commands does this skill expose?"* — you should
-   get the 45-command summary from the root skill.
+   get the 46-command list, one per skill directory under `skills/`.
 3. Ask: *"Search my vault for 'foo'"* — the agent should call
    `obsidian_search` against your vault and return real notes (or empty
    results if your vault is empty).
