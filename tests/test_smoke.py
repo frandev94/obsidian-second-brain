@@ -84,56 +84,164 @@ def test_minimax_adapter_must_emit_v1_package():
     assert (dist / "integrations" / "obsidian-mcp-server" / "server.py").is_file()
     assert (dist / "integrations" / "obsidian-mcp-server" / "vault_ops.py").is_file()
     assert (dist / "integrations" / "obsidian-mcp-server" / "README.md").is_file()
-    # One skill per upstream command (commands/*.md). The MCP server is the
-    # only "tool" surface; everything else flows through the skill set so
-    # Mavis can present each as a separately discoverable entry.
-    skill_dirs = sorted((dist / "skills").iterdir())
-    assert len(skill_dirs) == 46, f"expected 46 per-command skills, got {len(skill_dirs)}"
-    for skill_dir in skill_dirs:
-        skill_md = skill_dir / "SKILL.md"
-        assert skill_md.is_file(), f"missing SKILL.md in {skill_dir.name}"
-        text = skill_md.read_text(encoding="utf-8")
-        # Per the V1 spec every skill frontmatter needs name + description
-        assert text.startswith("---\n"), f"{skill_dir.name}: missing frontmatter"
-        assert f"name: {skill_dir.name}" in text, f"{skill_dir.name}: name mismatch"
-        assert "description:" in text.split("---\n", 2)[1], f"{skill_dir.name}: missing description"
-    # Manifest's skills[] array must list every emitted skill exactly
-    # once. Order check is loose (locale collation differs between bash
-    # glob and Python sorted on Windows), but set membership is exact.
-    manifest_skills = json.loads((dist / ".minimax-plugin" / "plugin.json").read_text(encoding="utf-8"))["skills"]
-    expected = [f"skills/{d.name}/SKILL.md" for d in skill_dirs]
-    assert sorted(manifest_skills) == sorted(expected), (
-        f"manifest skills mismatch\n  manifest: {sorted(manifest_skills)}\n  emitted:  {sorted(expected)}"
-    )
-    # INSTALL.md is the per-platform install/usage note; only the minimax
-    # adapter emits one because the Plugin V1 install path is data-dir
-    # specific and the generic README cannot cover it.
-    install_md = (dist / "INSTALL.md").read_text(encoding="utf-8")
-    assert "OBSIDIAN_VAULT_PATH" in install_md
-    assert ".minimax/plugins/obsidian-second-brain" in install_md
-    assert "restart Mavis" in install_md.lower() or "restart mavis" in install_md.lower()
 
-    # V1 spec checks
+    # Compute the expected skill set from commands/*.md, applying the same
+    # `exclude:` filter the adapter uses. This way adding a 47th command
+    # (or excluding one from `minimax`) does not require a magic number
+    # update in this test.
+    import re as _re
+
+    def _split_frontmatter(text: str) -> tuple[str, str] | None:
+        # Mimic the bash awk used by the adapter: locate the FIRST `---`
+        # line, then the SECOND `---` line. Body is everything after the
+        # second one. Markdown horizontal rules inside the body do not
+        # affect the frontmatter boundary.
+        lines = text.split("\n")
+        if not lines or lines[0].rstrip() != "---":
+            return None
+        for i in range(1, len(lines)):
+            if lines[i].rstrip() == "---":
+                fm = "\n".join(lines[1:i])
+                body = "\n".join(lines[i + 1 :])
+                return fm, body
+        return None
+
+    def _expected_skills() -> list[tuple[str, str, str, str]]:
+        out: list[tuple[str, str, str, str]] = []
+        for cmd in sorted((REPO_ROOT / "commands").glob("*.md")):
+            name = cmd.stem
+            text = cmd.read_text(encoding="utf-8")
+            split = _split_frontmatter(text)
+            if split is None:
+                description, body = "", text
+            else:
+                fm, body = split
+                em = _re.search(r"^exclude:\s*(.+?)\s*$", fm, _re.MULTILINE)
+                if em and "minimax" in [
+                    t.strip() for t in em.group(1).replace("[", "").replace("]", "").split(",")
+                ]:
+                    continue
+                dm = _re.search(r"^description:\s*(.+?)\s*$", fm, _re.MULTILINE)
+                description = dm.group(1) if dm else ""
+            out.append((name, description, body, text))
+        return out
+
+    expected = _expected_skills()
+    skill_dirs = list((dist / "skills").iterdir())
+    emitted_names = sorted(d.name for d in skill_dirs)
+    expected_names = sorted(n for n, _, _, _ in expected)
+    assert emitted_names == expected_names, (
+        f"emitted skills do not match commands/*.md (after exclude filter)\n"
+        f"  extra emitted: {set(emitted_names) - set(expected_names)}\n"
+        f"  missing emitted: {set(expected_names) - set(emitted_names)}"
+    )
+
+    # For each expected skill: frontmatter, description value, and body.
+    for name, upstream_description, upstream_body, _ in expected:
+        skill_md = dist / "skills" / name / "SKILL.md"
+        assert skill_md.is_file(), f"missing SKILL.md for {name}"
+        text = skill_md.read_text(encoding="utf-8")
+        # Frontmatter shape
+        assert text.startswith("---\n"), f"{name}: missing leading frontmatter"
+        end = text.find("\n---\n", 4)
+        assert end > 0, f"{name}: frontmatter not closed"
+        fm_body = text[4:end]
+        # name in frontmatter must match the directory and follow `name: <x>`
+        m = _re.search(r"^name:\s*(\S+)\s*$", fm_body, _re.MULTILINE)
+        assert m and m.group(1) == name, f"{name}: frontmatter name mismatch"
+        # description in frontmatter must equal the upstream value (so a
+        # fallback stub in the adapter would be caught here, not later).
+        d = _re.search(r"^description:\s*(.+?)\s*$", fm_body, _re.MULTILINE)
+        assert d, f"{name}: missing description in emitted frontmatter"
+        assert d.group(1) == upstream_description, (
+            f"{name}: emitted description [{d.group(1)}] != upstream [{upstream_description}]"
+        )
+        # Body must be non-empty and equal to the upstream body (frontmatter
+        # stripped). This catches truncation, double-frontmatter bugs, and
+        # adapter reformat regressions.
+        emitted_body = text[end + 5 :]  # skip past "\n---\n"
+        assert emitted_body == upstream_body, (
+            f"{name}: emitted body differs from upstream body"
+        )
+
+    # Full manifest shape validation (V1 spec fields).
     manifest = json.loads((dist / ".minimax-plugin" / "plugin.json").read_text(encoding="utf-8"))
     assert manifest["schemaVersion"] == 1
     assert manifest["name"] == "obsidian-second-brain"
+    assert _re.match(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$", manifest["name"])
+    assert isinstance(manifest.get("version"), str) and _re.match(
+        r"^\d+\.\d+\.\d+", manifest["version"]
+    ), f"version not SemVer: {manifest.get('version')!r}"
+    assert manifest.get("displayName") == "Obsidian Second Brain"
+    assert isinstance(manifest.get("description"), str) and manifest["description"]
+    assert isinstance(manifest.get("author"), str) and manifest["author"]
+    # icon path must resolve to an actual file
+    assert (dist / manifest["icon"]).is_file(), f"manifest icon path {manifest['icon']!r} does not resolve"
+    assert manifest.get("category") == "Productivity"
+    assert isinstance(manifest.get("exampleQueries"), list) and len(manifest["exampleQueries"]) >= 1
+    assert manifest.get("apps") == []
+    # mcpServers[] must list the actual .mcp.json files on disk
+    assert manifest["mcpServers"] == ["obsidian-second-brain.mcp.json"]
+    # skills[] must list every emitted skill exactly once
+    expected_skill_paths = [f"skills/{n}/SKILL.md" for n in expected_names]
+    assert sorted(manifest["skills"]) == sorted(expected_skill_paths), (
+        f"manifest skills[] mismatch\n  manifest: {sorted(manifest['skills'])}\n"
+        f"  expected:  {sorted(expected_skill_paths)}"
+    )
+
+    # Full MCP config shape.
     cfg = json.loads((dist / "obsidian-second-brain.mcp.json").read_text(encoding="utf-8"))
     assert cfg["schemaVersion"] == 1
-    assert cfg["mcpServers"]["obsidian-second-brain"]["type"] == "stdio"
-    assert "mcp<2" in cfg["mcpServers"]["obsidian-second-brain"]["args"]
+    server = cfg["mcpServers"]["obsidian-second-brain"]
+    assert server["type"] == "stdio"
+    assert "/" not in server["command"] and "\\" not in server["command"]
+    args = server["args"]
+    assert "mcp<2" in args, f"mcp<2 pin missing from args: {args}"
+    # The relative path to the server script must be POSIX-style
+    assert any(a.startswith("./integrations/") for a in args), f"no relative server path: {args}"
+    # OBSIDIAN_VAULT_PATH must be the templated placeholder, not a real path
+    assert server.get("env", {}).get("OBSIDIAN_VAULT_PATH") == "<VAULT_PATH>", (
+        f"OBSIDIAN_VAULT_PATH must be templated: {server.get('env', {}).get('OBSIDIAN_VAULT_PATH')!r}"
+    )
+
     # icon magic bytes
     assert (dist / "icon.png").read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
     # placeholder text
     assert "placeholder" in (dist / "placeholder").read_text(encoding="utf-8").lower()
-    # The adapter is bash; emit the same files twice and assert byte-identical
+
+    # INSTALL.md coverage is the per-platform install guide; the previous
+    # 3-string check was too thin. Pin the things a user actually needs.
+    install_md = (dist / "INSTALL.md").read_text(encoding="utf-8")
+    for needle in (
+        "OBSIDIAN_VAULT_PATH",
+        ".minimax/plugins/obsidian-second-brain",
+        "uv",
+        "obsidian_search",
+        "obsidian_save_note",
+        "restart mavis",  # case-insensitive check below
+    ):
+        assert needle.lower() in install_md.lower(), f"INSTALL.md missing: {needle!r}"
+
+    # Full-tree idempotency: rebuild and hash every emitted file. If any
+    # emitted file is non-deterministic across two runs, this catches it.
     import hashlib as _hl
-    h1 = _hl.sha256((dist / "integrations" / "obsidian-mcp-server" / "server.py").read_bytes()).hexdigest()
+
+    def _hash_tree(root: Path) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for p in sorted(root.rglob("*")):
+            if p.is_file():
+                rel = p.relative_to(root).as_posix()
+                out[rel] = _hl.sha256(p.read_bytes()).hexdigest()
+        return out
+
+    h1 = _hash_tree(dist)
     subprocess.run(
         ["bash", "scripts/build.sh", "--platform", "minimax"],
         cwd=REPO_ROOT, check=True, capture_output=True, text=True,
     )
-    h2 = _hl.sha256((dist / "integrations" / "obsidian-mcp-server" / "server.py").read_bytes()).hexdigest()
-    assert h1 == h2, "minimax adapter build is not idempotent"
+    h2 = _hash_tree(dist)
+    diff = {k: (h1.get(k), h2.get(k)) for k in h1.keys() | h2.keys() if h1.get(k) != h2.get(k)}
+    assert not diff, f"minimax adapter build is not idempotent; differing files: {sorted(diff.keys())}"
 
 
 def test_hermes_build_generates_native_skills():
