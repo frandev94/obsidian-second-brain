@@ -50,10 +50,10 @@ adapter_build() {
     local cmd_file name description
     while IFS= read -r cmd_file; do
       [[ -f "$cmd_file" ]] || continue
-      name=$(basename "$cmd_file" .md)
-      if ! _minimax_should_include "$cmd_file"; then
+      if ! should_include "$cmd_file" "$MINIMAX_PLATFORM"; then
         continue
       fi
+      name=$(basename "$cmd_file" .md)
       description=$(_minimax_extract_description "$cmd_file")
       _minimax_emit_command_skill "$dst" "$name" "$description" "$cmd_file"
       skill_paths+=("skills/$name/SKILL.md")
@@ -193,32 +193,6 @@ _minimax_copy_mcp_server() {
 # frontmatter is rebuilt from scratch (name + description) so the V1 spec
 # always sees a valid `name` field, and the body is the original command
 # file with the upstream frontmatter stripped.
-_minimax_should_include() {
-  # Replicates the upstream should_include() helper from adapters/lib.sh
-  # for the minimax platform. Returns 0 if the command should be emitted
-  # (its `exclude:` list does not contain `minimax`), 1 otherwise.
-  local file="$1"
-  local raw
-  raw=$(awk '
-    BEGIN { in_fm = 0; fm_count = 0 }
-    /^---[[:space:]]*$/ { fm_count++; in_fm = (fm_count == 1) ? 1 : 0; next }
-    in_fm && /^exclude:[[:space:]]*/ {
-      sub(/^exclude:[[:space:]]*/, "")
-      print
-      exit
-    }
-  ' "$file")
-  [[ -z "$raw" || "$raw" == "[]" ]] && return 0
-  # Split the list on commas / whitespace, check each token
-  local token
-  for token in $(printf '%s' "$raw" | tr -d '[]' | tr ',' ' '); do
-    if [[ "$token" == "minimax" ]]; then
-      return 1
-    fi
-  done
-  return 0
-}
-
 _minimax_extract_description() {
   # Pull the value of `description:` from the upstream frontmatter. The
   # command files use a flat one-line `description: ...`, so the first
